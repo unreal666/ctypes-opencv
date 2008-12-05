@@ -1,7 +1,6 @@
+#!/usr/bin/env python
 # ctypes-opencv - A Python wrapper for OpenCV using ctypes
 
-# Copyright (c) 2006, Michael Otto
-# Copyright (c) 2007, Gary Bishop
 # Copyright (c) 2008, Minh-Tri Pham
 # All rights reserved.
 
@@ -14,8 +13,7 @@
 #THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # For further inquiries, please contact Minh-Tri Pham at pmtri80@gmail.com.
-# ---------------------------------------------------------------------
-#!/usr/bin/env python
+# ----------------------------------------------------------------------------
 """ctypes-opencv - A Python wrapper for OpenCV using ctypes
 
 ctypes-opencv is a Python module which encapsulates the functionality of Intel's Open Source Computer Vision Library (OpenCV). The Open Computer Vision Library is a collection of algorithms and sample code for various computer vision problems. The library is compatible with IPL and utilizes Intel Integrated Performance Primitives for better performance. The goal of ctypes-opencv is to give one Python access to all documented functionality of OpenCV.
@@ -475,7 +473,6 @@ def cvSlice(start, end):
 #Viji Periapoilan 5/23/2007(start)
 CV_WHOLE_SEQ_END_INDEX = 0x3fffffff
 CV_WHOLE_SEQ = CvSlice(0, CV_WHOLE_SEQ_END_INDEX)
-
 #Viji Periapoilan 5/23/2007(end)
 
 #-----------------------------------------------------------------------------
@@ -1264,22 +1261,6 @@ CvModuleInfo._fields_ = [
 
 
 #-----------------------------------------------------------------------------
-# A hack on OpenCV's data types
-#-----------------------------------------------------------------------------
-# allows the content's attributes to be directly accessible
-# e.g. img.width <=> img.contents.width
-def _hack_contents_getattr(cls):
-    def _new__getattr__(self, name):
-        return self.contents.__getattribute__(name)
-    cls.__getattr__ = _new__getattr__
-    
-_hack_contents_getattr(POINTER(IplImage))
-_hack_contents_getattr(POINTER(CvMat))
-_hack_contents_getattr(POINTER(CvMatND))
-_hack_contents_getattr(POINTER(CvHistogram))
-
-
-#-----------------------------------------------------------------------------
 # A hack on OpenCV's POINTER(IplImage)
 #-----------------------------------------------------------------------------
 # allows to access pixels directly using image indexing with 2 parameters, row then column
@@ -1320,12 +1301,11 @@ def _hack_iplimage(cls):
             raise IndexError("Column %d is not in [0,%d)" % (x, w))
                 
         datatype = depth2ctype[self.contents.depth]*self.contents.nChannels
-        return datatype.from_address(addressof(self.contents.imageData.contents)+self.contents.widthStep*y+x)
+        return datatype.from_address(addressof(self.contents.imageData.contents)+self.contents.widthStep*y+x*sizeof(datatype))
 
     def my__getitem__(self, key):
         pixel = get_pixel(self, key)
-        return pixel[0] if len(pixel) == 1 else CvScalar(*pixel)
-            
+        return pixel if len(pixel) > 1 else pixel[0]
         
     def my__setitem__(self, key, value):
         pixel = get_pixel(self, key)
@@ -1416,7 +1396,8 @@ def _hack_cvmat(cls):
             if not 0 <= x < w:
                 raise IndexError("Column %d is not in [0,%d)" % (x, w))
                     
-            return type2ctype(self.contents.type).from_address(addressof(self.contents.data.ptr.contents)+self.contents.step*y+x)
+            datatype = type2ctype(self.contents.type)
+            return datatype.from_address(addressof(self.contents.data.ptr.contents)+self.contents.step*y+x*sizeof(datatype))
             
         # a 2d-slice
         w = self.contents.cols
@@ -1429,7 +1410,6 @@ def _hack_cvmat(cls):
         if sy.step == 0:
             raise IndexError("Row slice cannot have zero step, i.e. step_y != 0.")
             
-        CvMat 
         result = cvGetSubRect(self, cvRect(0,0,1,1))
 
         cols = sx.stop-sx.start
@@ -1447,10 +1427,7 @@ def _hack_cvmat(cls):
 
     def my__getitem__(self, key):
         z = get_pixel_or_slice2d(self, key)
-        if isinstance(z, POINTER(CvMat)):
-            return z
-            
-        return z[0] if len(z) == 1 else CvScalar(*z)
+        return z if isinstance(z, POINTER(CvMat)) or len(z) > 1 else z[0]
                     
     def my__setitem__(self, key, value):
         z = get_pixel_or_slice2d(self, key)
@@ -1459,9 +1436,10 @@ def _hack_cvmat(cls):
                 value = cvScalar(value)
             cvSet(z, value)
         else:
-            if isinstance(value, CvScalar):
+            y = getattr(value, '__getitem__', None)
+            if y:
                 for i in xrange(len(z)):
-                    z[i] = value.val[i]
+                    z[i] = value[i]
             else:
                 z[0] = value
             
@@ -1519,12 +1497,12 @@ def _add_autoclean(obj, _clean):
 # Memory allocation/deallocation for CvArr_p
 #-----------------------------------------------------------------------------
 
-_cvAlloc_ = cfunc('cvAlloc', _cxDLL, CvArr_p,
-    ('size', c_ulong, 1), # size_t size 
-)
-
 _cvFree_ = cfunc('cvFree_', _cxDLL, None,
     ('ptr', c_void_p, 1), # void* ptr
+)
+
+_cvAlloc_ = cfunc('cvAlloc', _cxDLL, CvArr_p,
+    ('size', c_ulong, 1), # size_t size 
 )
 
 # Allocates memory buffer
@@ -1555,115 +1533,15 @@ def cvFree(ptr):
 #-----------------------------------------------------------------------------
 
 
-# ------ List of methods not to be called by a user ------
+_cvReleaseImageHeader = cfunc('cvReleaseImageHeader', _cxDLL, None,
+    ('image', ByRefArg(POINTER(IplImage)), 1), # IplImage** image 
+)
 
-# Allocates, initializes, and returns structure IplImage
 _cvCreateImageHeader = cfunc('cvCreateImageHeader', _cxDLL, POINTER(IplImage),
     ('size', CvSize, 1), # CvSize size
     ('depth', c_int, 1), # int depth
     ('channels', c_int, 1), # int channels 
 )
-
-# Creates header and allocates data
-_cvCreateImage = cfunc('cvCreateImage', _cxDLL, POINTER(IplImage),
-    ('size', CvSize, 1), # CvSize size
-    ('depth', c_int, 1), # int depth
-    ('channels', c_int, 1), # int channels 
-)
-
-# Releases (i.e. deallocates) IPL image header
-_cvReleaseImageHeader = cfunc('cvReleaseImageHeader', _cxDLL, None,
-    ('image', ByRefArg(POINTER(IplImage)), 1), # IplImage** image 
-)
-
-# Releases header and image data
-_cvReleaseImage = cfunc('cvReleaseImage', _cxDLL, None,
-    ('image', ByRefArg(POINTER(IplImage)), 1), # IplImage** image 
-)
-
-# Makes a full copy of image (widthStep may differ)
-_cvCloneImage = cfunc('cvCloneImage', _cxDLL, POINTER(IplImage),
-    ('image', POINTER(IplImage), 1), # const IplImage* image 
-)
-
-# Creates new matrix header
-_cvCreateMatHeader = cfunc('cvCreateMatHeader', _cxDLL, POINTER(CvMat),
-    ('rows', c_int, 1), # int rows
-    ('cols', c_int, 1), # int cols
-    ('type', c_int, 1), # int type 
-)
-
-# Creates new matrix
-_cvCreateMat = cfunc('cvCreateMat', _cxDLL, POINTER(CvMat),
-    ('rows', c_int, 1), # int rows
-    ('cols', c_int, 1), # int cols
-    ('type', c_int, 1), # int type 
-)
-
-# Deallocates matrix
-_cvReleaseMat = cfunc('cvReleaseMat', _cxDLL, None,
-    ('mat', ByRefArg(POINTER(CvMat)), 1), # CvMat** mat 
-)
-
-# Creates matrix copy
-_cvCloneMat = cfunc('cvCloneMat', _cxDLL, POINTER(CvMat),
-    ('mat', POINTER(CvMat), 1), # const CvMat* mat 
-)
-
-# Creates new matrix header
-_cvCreateMatNDHeader = cfunc('cvCreateMatNDHeader', _cxDLL, POINTER(CvMatND),
-    ('dims', c_int, 1), # int dims
-    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
-    ('type', c_int, 1), # int type 
-)
-
-# Creates multi-dimensional dense array
-_cvCreateMatND = cfunc('cvCreateMatND', _cxDLL, POINTER(CvMatND),
-    ('dims', c_int, 1), # int dims
-    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
-    ('type', c_int, 1), # int type 
-)
-
-# Initializes multi-dimensional array header
-_cvInitMatNDHeader = cfunc('cvInitMatNDHeader', _cxDLL, POINTER(CvMatND),
-    ('mat', POINTER(CvMatND), 1), # CvMatND* mat
-    ('dims', c_int, 1), # int dims
-    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
-    ('type', c_int, 1), # int type
-    ('data', c_void_p, 1, None), # void* data
-)
-
-# Creates full copy of multi-dimensional array
-_cvCloneMatND = cfunc('cvCloneMatND', _cxDLL, POINTER(CvMatND),
-    ('mat', POINTER(CvMatND), 1), # const CvMatND* mat 
-)
-
-# Creates sparse array
-_cvCreateSparseMat = cfunc('cvCreateSparseMat', _cxDLL, POINTER(CvSparseMat),
-    ('dims', c_int, 1), # int dims
-    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
-    ('type', c_int, 1), # int type 
-)
-
-# Deallocates sparse array
-_cvReleaseSparseMat = cfunc('cvReleaseSparseMat', _cxDLL, None,
-    ('mat', ByRefArg(POINTER(CvSparseMat)), 1), # CvSparseMat** mat 
-)
-
-# Creates full copy of sparse array
-_cvCloneSparseMat = cfunc('cvCloneSparseMat', _cxDLL, POINTER(CvSparseMat),
-    ('mat', POINTER(CvSparseMat), 1), # const CvSparseMat* mat 
-)
-
-# Returns matrix header corresponding to the rectangular sub-array of input image or matrix
-_cvGetSubRect = cfunc('cvGetSubRect', _cxDLL, None,
-    ('arr', CvArr_p, 1), # const CvArr* arr
-    ('submat', POINTER(CvMat), 1), # CvMat* submat
-    ('rect', CvRect, 1), # CvRect rect 
-)
-
-# ------ List of methods a user should call ------
-
 
 # Allocates, initializes, and returns structure IplImage
 def cvCreateImageHeader(*args):
@@ -1689,6 +1567,16 @@ cvInitImageHeader.__doc__ = """IplImage* cvInitImageHeader(IplImage* image, CvSi
 Initializes allocated by user image header
 """
 
+_cvReleaseImage = cfunc('cvReleaseImage', _cxDLL, None,
+    ('image', ByRefArg(POINTER(IplImage)), 1), # IplImage** image 
+)
+
+_cvCreateImage = cfunc('cvCreateImage', _cxDLL, POINTER(IplImage),
+    ('size', CvSize, 1), # CvSize size
+    ('depth', c_int, 1), # int depth
+    ('channels', c_int, 1), # int channels 
+)
+
 # Creates header and allocates data
 def cvCreateImage(*args):
     """IplImage* cvCreateImage(CvSize size, int depth, int channels)
@@ -1704,6 +1592,10 @@ cvReleaseImageHeader = cvFree
     
 # Releases header and image data
 cvReleaseImage = cvFree
+
+_cvCloneImage = cfunc('cvCloneImage', _cxDLL, POINTER(IplImage),
+    ('image', POINTER(IplImage), 1), # const IplImage* image 
+)
 
 # Makes a full copy of image (widthStep may differ)
 def cvCloneImage(*args):
@@ -1762,6 +1654,16 @@ cvGetImageROI.__doc__ = """CvRect cvGetImageROI(const IplImage* image)
 Returns image ROI coordinates
 """
 
+_cvReleaseMat = cfunc('cvReleaseMat', _cxDLL, None,
+    ('mat', ByRefArg(POINTER(CvMat)), 1), # CvMat** mat 
+)
+
+_cvCreateMatHeader = cfunc('cvCreateMatHeader', _cxDLL, POINTER(CvMat),
+    ('rows', c_int, 1), # int rows
+    ('cols', c_int, 1), # int cols
+    ('type', c_int, 1), # int type 
+)
+
 # Creates new matrix header
 def cvCreateMatHeader(*args):
     """CvMat* cvCreateMatHeader(int rows, int cols, int type)
@@ -1788,6 +1690,12 @@ cvInitMatHeader.__doc__ = """CvMat* cvInitMatHeader(CvMat* mat, int rows, int co
 Initializes matrix header
 """
 
+_cvCreateMat = cfunc('cvCreateMat', _cxDLL, POINTER(CvMat),
+    ('rows', c_int, 1), # int rows
+    ('cols', c_int, 1), # int cols
+    ('type', c_int, 1), # int type 
+)
+
 # Creates new matrix
 def cvCreateMat(*args):
     """CvMat* cvCreateMat(int rows, int cols, int type)
@@ -1801,6 +1709,10 @@ def cvCreateMat(*args):
 # Deallocates matrix
 cvReleaseMat = cvFree    
 
+_cvCloneMat = cfunc('cvCloneMat', _cxDLL, POINTER(CvMat),
+    ('mat', POINTER(CvMat), 1), # const CvMat* mat 
+)
+
 # Creates matrix copy
 def cvCloneMat(*args):
     """CvMat* cvCloneMat(const CvMat* mat)
@@ -1810,6 +1722,12 @@ def cvCloneMat(*args):
     z = _cvCloneMat(*args)
     _add_autoclean(z, _cvReleaseMat)
     return z
+
+_cvGetSubRect = cfunc('cvGetSubRect', _cxDLL, None,
+    ('arr', CvArr_p, 1), # const CvArr* arr
+    ('submat', POINTER(CvMat), 1), # CvMat* submat
+    ('rect', CvRect, 1), # CvRect rect 
+)
 
 # Returns matrix header corresponding to the rectangular sub-array of input image or matrix
 def cvGetSubRect(arr, rect, submat=None):
@@ -1861,6 +1779,12 @@ cvGetDiag.__doc__ = """CvMat* cvGetDiag(const CvArr* arr, CvMat* submat, int dia
 Returns one of array diagonals
 """
 
+_cvCreateMatNDHeader = cfunc('cvCreateMatNDHeader', _cxDLL, POINTER(CvMatND),
+    ('dims', c_int, 1), # int dims
+    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
+    ('type', c_int, 1), # int type 
+)
+
 # Creates new matrix header
 def cvCreateMatNDHeader(sizes, cvmat_type):
     """CvMatND* cvCreateMatNDHeader(sizes = list or tuple of integers, int type)
@@ -1871,6 +1795,12 @@ def cvCreateMatNDHeader(sizes, cvmat_type):
     _add_autoclean(z, _cvReleaseMat)
     return z
 
+_cvCreateMatND = cfunc('cvCreateMatND', _cxDLL, POINTER(CvMatND),
+    ('dims', c_int, 1), # int dims
+    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
+    ('type', c_int, 1), # int type 
+)
+
 # Creates multi-dimensional dense array
 def cvCreateMatND(sizes, cvmat_type):
     """CvMatND* cvCreateMatND(sizes = list or tuple of integers, int type)
@@ -1880,6 +1810,14 @@ def cvCreateMatND(sizes, cvmat_type):
     z = _cvCreateMatND(len(sizes), sizes, cvmat_type)
     _add_autoclean(z, _cvReleaseMat)
     return z
+
+_cvInitMatNDHeader = cfunc('cvInitMatNDHeader', _cxDLL, POINTER(CvMatND),
+    ('mat', POINTER(CvMatND), 1), # CvMatND* mat
+    ('dims', c_int, 1), # int dims
+    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
+    ('type', c_int, 1), # int type
+    ('data', c_void_p, 1, None), # void* data
+)
 
 # Initializes multi-dimensional array header
 def cvInitMatNDHeader(mat, sizes, cvmat_type, data=None):
@@ -1892,6 +1830,10 @@ def cvInitMatNDHeader(mat, sizes, cvmat_type, data=None):
 # Releases CvMatND
 cvReleaseMatND = cvReleaseMat
 
+_cvCloneMatND = cfunc('cvCloneMatND', _cxDLL, POINTER(CvMatND),
+    ('mat', POINTER(CvMatND), 1), # const CvMatND* mat 
+)
+
 # Creates full copy of multi-dimensional array
 def cvCloneMatND(*args):
     """CvMatND* cvCloneMatND(const CvMatND* mat)
@@ -1901,6 +1843,16 @@ def cvCloneMatND(*args):
     z = _cvCloneMatND(*args)
     _add_autoclean(z, _cvReleaseMat)
     return z
+
+_cvReleaseSparseMat = cfunc('cvReleaseSparseMat', _cxDLL, None,
+    ('mat', ByRefArg(POINTER(CvSparseMat)), 1), # CvSparseMat** mat 
+)
+
+_cvCreateSparseMat = cfunc('cvCreateSparseMat', _cxDLL, POINTER(CvSparseMat),
+    ('dims', c_int, 1), # int dims
+    ('sizes', ListPOINTER(c_int), 1), # const int* sizes
+    ('type', c_int, 1), # int type 
+)
 
 # Creates sparse array
 def cvCreateSparseMat(sizes, cvmat_type):
@@ -1914,6 +1866,10 @@ def cvCreateSparseMat(sizes, cvmat_type):
 
 # Deallocates sparse array
 cvReleaseSparseMat = cvFree
+
+_cvCloneSparseMat = cfunc('cvCloneSparseMat', _cxDLL, POINTER(CvSparseMat),
+    ('mat', POINTER(CvSparseMat), 1), # const CvSparseMat* mat 
+)
 
 # Creates full copy of sparse array
 def cvCloneSparseMat(*args):
@@ -1950,8 +1906,14 @@ def cvCloneSparseMat(*args):
 #-----------------------------------------------------------------------------
 
 
-# ------ List of methods not to be called by a user ------
+# Returns type of array elements
+cvGetElemType = cfunc('cvGetElemType', _cxDLL, c_int,
+    ('arr', CvArr_p, 1), # const CvArr* arr 
+)
+cvGetElemType.__doc__ = """int cvGetElemType(const CvArr* arr)
 
+Returns type of array elements
+"""
 
 # Return number of array dimensions and their sizes or the size of particular dimension
 _cvGetDims = cfunc('cvGetDims', _cxDLL, c_int,
@@ -1963,19 +1925,6 @@ _cvGetDimSize = cfunc('cvGetDimSize', _cxDLL, c_int,
     ('arr', CvArr_p, 1), # const CvArr* arr
     ('index', c_int, 1), # int index 
 )
-
-
-# ------ List of methods a user should call ------
-
-
-# Returns type of array elements
-cvGetElemType = cfunc('cvGetElemType', _cxDLL, c_int,
-    ('arr', CvArr_p, 1), # const CvArr* arr 
-)
-cvGetElemType.__doc__ = """int cvGetElemType(const CvArr* arr)
-
-Returns type of array elements
-"""
 
 # Return a tuple of array dimensions
 def cvGetDims(arr):
@@ -2021,7 +1970,6 @@ cvPtr3D.__doc__ = """uchar* cvPtr3D(const CvArr* arr, int idx0, int idx1, int id
 
 Return POINTER to the particular array element
 """
-
 
 cvPtrND = cfunc('cvPtrND', _cxDLL, c_void_p,
     ('arr', CvArr_p, 1), # const CvArr* arr
@@ -3238,6 +3186,7 @@ Calculates Mahalonobis distance between two vectors
 """
 
 cvMahalonobis = cvMahalanobis
+
     
 #-----------------------------------------------------------------------------
 # Array Statistics
@@ -3431,19 +3380,6 @@ Performs forward or inverse Discrete Cosine transform of 1D or 2D floating-point
 #-----------------------------------------------------------------------------
 
 
-# ------ List of methods not to be called by a user ------
-
-# Creates memory storage
-_cvCreateMemStorage = cfunc('cvCreateMemStorage', _cxDLL, POINTER(CvMemStorage),
-    ('block_size', c_int, 1, 0), # int block_size
-)
-
-# Creates child memory storage
-_cvCreateChildMemStorage = cfunc('cvCreateChildMemStorage', _cxDLL, POINTER(CvMemStorage),
-    ('parent', POINTER(CvMemStorage), 1), # CvMemStorage* parent 
-)
-
-# Releases memory storage
 _cvReleaseMemStorage = cfunc('cvReleaseMemStorage', _cxDLL, None,
     ('storage', ByRefArg(POINTER(CvMemStorage)), 1), # CvMemStorage** storage 
 )
@@ -3460,9 +3396,9 @@ def _my_cvReleaseMemStorage(storage, check_parent=True):
         _my_cvReleaseMemStorage(z, check_parent=False)
     _cvReleaseMemStorage(storage)
 
-
-# ------ List of methods a user should call ------
-
+_cvCreateMemStorage = cfunc('cvCreateMemStorage', _cxDLL, POINTER(CvMemStorage),
+    ('block_size', c_int, 1, 0), # int block_size
+)
 
 # Creates memory storage
 def cvCreateMemStorage(block_size=0):
@@ -3474,6 +3410,10 @@ def cvCreateMemStorage(block_size=0):
     z._children_list = []
     _add_autoclean(z, _my_cvReleaseMemStorage)
     return z
+
+_cvCreateChildMemStorage = cfunc('cvCreateChildMemStorage', _cxDLL, POINTER(CvMemStorage),
+    ('parent', POINTER(CvMemStorage), 1), # CvMemStorage* parent 
+)
 
 # Creates child memory storage
 def cvCreateChildMemStorage(parent):
@@ -4216,18 +4156,16 @@ Clone graph
 
 # -------- Functions dealing with CvGraphScanner --------
 
-# Creates structure for depth-first graph traversal
+
+_cvReleaseGraphScanner = cfunc('cvReleaseGraphScanner', _cxDLL, None,
+    ('scanner', ByRefArg(POINTER(CvGraphScanner)), 1), # CvGraphScanner** scanner 
+)
+
 _cvCreateGraphScanner = cfunc('cvCreateGraphScanner', _cxDLL, POINTER(CvGraphScanner),
     ('graph', POINTER(CvGraph), 1), # CvGraph* graph
     ('vtx', POINTER(CvGraphVtx), 1, None), # CvGraphVtx* vtx
     ('mask', c_int, 1), # int mask
 )
-
-# Finishes graph traversal procedure
-_cvReleaseGraphScanner = cfunc('cvReleaseGraphScanner', _cxDLL, None,
-    ('scanner', ByRefArg(POINTER(CvGraphScanner)), 1), # CvGraphScanner** scanner 
-)
-
 
 # Creates structure for depth-first graph traversal
 def cvCreateGraphScanner(*args):
@@ -5936,9 +5874,10 @@ CV_SHAPE_CROSS = 1
 CV_SHAPE_ELLIPSE = 2
 CV_SHAPE_CUSTOM = 100
 
-# ------ List of methods not to be called by a user ------
+_cvReleaseStructuringElement = cfunc('cvReleaseStructuringElement', _cvDLL, None,
+    ('element', ByRefArg(POINTER(IplConvKernel)), 1), # IplConvKernel** element 
+)
 
-# Creates structuring element
 _cvCreateStructuringElementEx = cfunc('cvCreateStructuringElementEx', _cvDLL, POINTER(IplConvKernel),
     ('cols', c_int, 1), # int cols
     ('rows', c_int, 1), # int rows
@@ -5947,14 +5886,6 @@ _cvCreateStructuringElementEx = cfunc('cvCreateStructuringElementEx', _cvDLL, PO
     ('shape', c_int, 1), # int shape
     ('values', c_int_p, 1, None), # int* values
 )
-
-# Deletes structuring element
-_cvReleaseStructuringElement = cfunc('cvReleaseStructuringElement', _cvDLL, None,
-    ('element', ByRefArg(POINTER(IplConvKernel)), 1), # IplConvKernel** element 
-)
-
-
-# ------ List of methods a user should call ------
 
 # Creates structuring element
 def cvCreateStructuringElementEx(cols, rows, anchor_x, anchor_y, shape, values=None):
@@ -6255,6 +6186,7 @@ Upsamples image
 #-----------------------------------------------------------------------------
 
 
+
 # Fills a connected component with given color
 cvFloodFill = cfunc('cvFloodFill', _cvDLL, None,
     ('image', CvArr_p, 1), # CvArr* image
@@ -6275,19 +6207,25 @@ CV_FLOODFILL_FIXED_RANGE = 1 << 16
 CV_FLOODFILL_MASK_ONLY = 1 << 17
 
 # Finds contours in binary image
-cvFindContours = cfunc('cvFindContours', _cvDLL, c_int,
+_cvFindContours = cfunc('cvFindContours', _cvDLL, c_int,
     ('image', CvArr_p, 1), # CvArr* image
     ('storage', POINTER(CvMemStorage), 1), # CvMemStorage* storage
-    ('first_contour', POINTER(POINTER(CvSeq)), 1), # CvSeq** first_contour
+    ('first_contour', ByRefArg(POINTER(CvSeq)), 1), # CvSeq** first_contour
     ('header_size', c_int, 1, sizeof(CvContour)), # int header_size
     ('mode', c_int, 1, CV_RETR_LIST), # int mode
     ('method', c_int, 1, CV_CHAIN_APPROX_SIMPLE), # int method
     ('offset', CvPoint, 1, cvPoint(0,0)), # CvPoint offset
 )
-cvFindContours.__doc__ = """int cvFindContours(CvArr* image, CvMemStorage* storage, CvSeq** first_contour, int header_size=sizeofCvContour, int mode=CV_RETR_LIST, int method=CV_CHAIN_APPROX_SIMPLE, CvPoint offset=cvPoint(0, 0)
 
-Finds contours in binary image
-"""
+# Finds contours in binary image
+def cvFindContours(image, storage, header_size=sizeof(CvContour), mode=CV_RETR_LIST, method=CV_CHAIN_APPROX_SIMPLE, offset=cvPoint(0,0)):
+    """(int ncontours, CvSeq* first_contour) = cvFindContours(CvArr* image, CvMemStorage* storage, int header_size=sizeof(CvContour), int mode=CV_RETR_LIST, int method=CV_CHAIN_APPROX_SIMPLE, CvPoint offset=cvPoint(0, 0)
+
+    Finds contours in binary image
+    """
+    first = POINTER(CvSeq)()
+    nc = _cvFindContours(image, storage, first, header_size, mode, method, offset)
+    return nc, first
 
 # Initializes contour scanning process
 cvStartFindContours = cfunc('cvStartFindContours', _cvDLL, CvContourScanner,
@@ -6520,9 +6458,10 @@ Inpaints the selected region in the image
 #-----------------------------------------------------------------------------
 
 
-# ------ List of methods not to be called by a user ------
+_cvReleaseHist = cfunc('cvReleaseHist', _cvDLL, None,
+    ('hist', ByRefArg(POINTER(CvHistogram)), 1), # CvHistogram** hist 
+)
 
-# Creates histogram
 _cvCreateHist = cfunc('cvCreateHist', _cvDLL, POINTER(CvHistogram),
     ('dims', c_int, 1), # int dims
     ('sizes', ListPOINTER(c_int), 1), # int* sizes
@@ -6530,19 +6469,6 @@ _cvCreateHist = cfunc('cvCreateHist', _cvDLL, POINTER(CvHistogram),
     ('ranges', ListPOINTER2(c_float), 1, None), # float** ranges=NULL
     ('uniform', c_int, 1, 1), # int uniform=1
 )
-
-# Releases histogram
-_cvReleaseHist = cfunc('cvReleaseHist', _cvDLL, None,
-    ('hist', ByRefArg(POINTER(CvHistogram)), 1), # CvHistogram** hist 
-)
-
-# Copies histogram
-_cvCopyHist = cfunc('cvCopyHist', _cvDLL, None,
-    ('src', POINTER(CvHistogram), 1), # const CvHistogram* src
-    ('dst', ByRefArg(POINTER(CvHistogram)), 1, POINTER(CvHistogram)()), # CvHistogram** dst 
-)
-
-# ------ List of methods a user should call ------
 
 # Creates histogram
 def cvCreateHist(sizes, hist_type, ranges=None, uniform=1):
@@ -6640,6 +6566,11 @@ cvCompareHist.__doc__ = """double cvCompareHist(const CvHistogram* hist1, const 
 
 Compares two dense histograms
 """
+
+_cvCopyHist = cfunc('cvCopyHist', _cvDLL, None,
+    ('src', POINTER(CvHistogram), 1), # const CvHistogram* src
+    ('dst', ByRefArg(POINTER(CvHistogram)), 1, POINTER(CvHistogram)()), # CvHistogram** dst 
+)
 
 # Copies histogram
 def cvCopyHist(src, dst=None):
@@ -7004,16 +6935,35 @@ Fits line to 2D or 3D point set
 """
 
 # Finds convex hull of point set
-cvConvexHull2 = cfunc('cvConvexHull2', _cvDLL, POINTER(CvSeq),
+_cvConvexHull2 = cfunc('cvConvexHull2', _cvDLL, POINTER(CvSeq),
     ('input', CvArr_p, 1), # const CvArr* input
     ('hull_storage', c_void_p, 1, None), # void* hull_storage
-    ('orientation', c_int, 1), # int orientation
+    ('orientation', c_int, 1, CV_CLOCKWISE), # int orientation
     ('return_points', c_int, 1, 0), # int return_points
 )
-cvConvexHull2.__doc__ = """CvSeq* cvConvexHull2(const CvArr* input, void* hull_storage=NULL, int orientation=CV_CLOCKWISE, int return_points=0)
 
-Finds convex hull of point set
-"""
+def cvConvexHull2(input, orientation=CV_CLOCKWISE, return_points=0):
+    """list_or_tuple_of_int cvConvexHull2(list_or_tuple_of_CvPoint input, int orientation=CV_CLOCKWISE, int return_points=0)
+
+    Finds convex hull of point set
+    """
+    n = len(input)
+    point_mat = cvCreateMat(1, n, CV_32SC2)
+    hull_mat = cvCreateMat(1, n, CV_32SC1)
+    
+    for i in xrange(n):
+        src = input[i]
+        dst = point_mat[0,i]
+        dst[0] = src.x
+        dst[1] = src.y
+        
+    _cvConvexHull2(point_mat, hull_mat, orientation, return_points)
+    
+    hull = []
+    for i in xrange(hull_mat.contents.cols):
+        hull.append(hull_mat[0,i])
+        
+    return hull
 
 # Tests contour convex
 cvCheckContourConvexity = cfunc('cvCheckContourConvexity', _cvDLL, c_int,
@@ -7166,16 +7116,23 @@ Inserts a single point to Delaunay triangulation
 """
 
 # Inserts a single point to Delaunay triangulation
-cvSubdiv2DLocate = cfunc('cvSubdiv2DLocate', _cvDLL, CvSubdiv2DPointLocation,
+_cvSubdiv2DLocate = cfunc('cvSubdiv2DLocate', _cvDLL, CvSubdiv2DPointLocation,
     ('subdiv', POINTER(CvSubdiv2D), 1), # CvSubdiv2D* subdiv
     ('pt', CvPoint2D32f, 1), # CvPoint2D32f pt
-    ('edge', POINTER(CvSubdiv2DEdge), 1), # CvSubdiv2DEdge* edge
-    ('vertex', POINTER(POINTER(CvSubdiv2DPoint)), 1, None), # CvSubdiv2DPoint** vertex
+    ('edge', ByRefArg(CvSubdiv2DEdge), 1), # CvSubdiv2DEdge* edge
+    ('vertex', ByRefArg(POINTER(CvSubdiv2DPoint)), 1, None), # CvSubdiv2DPoint** vertex
 )
-cvSubdiv2DLocate.__doc__ = """CvSubdiv2DPointLocation cvSubdiv2DLocate(CvSubdiv2D* subdiv, CvPoint2D32f pt, CvSubdiv2DEdge* edge, CvSubdiv2DPoint** vertex=NULL)
 
-Inserts a single point to Delaunay triangulation
-"""
+def cvSubdiv2DLocate(subdiv, pt):
+    """(CvSubdiv2DPointLocation res, CvSubdiv2DEdge edge, CvSubdiv2DPoint* vertex) = cvSubdiv2DLocate(CvSubdiv2D* subdiv, CvPoint2D32f pt)
+
+    Inserts a single point to Delaunay triangulation
+    [ctypes-opencv] Both 'edge' and 'vertex' are returned in addition to the the return value of the function.
+    """
+    edge = CvSubdiv2DEdge()
+    vertex = POINTER(CvSubdiv2DPoint)()
+    z = _cvSubdiv2DLocate(subdiv, pt, edge, vertex)
+    return z, edge.value, vertex
 
 # Finds the closest subdivision vertex to given point
 cvFindNearestPoint2D = cfunc('cvFindNearestPoint2D', _cvDLL, POINTER(CvSubdiv2DPoint),
@@ -7448,36 +7405,15 @@ Calculates optical flow for a sparse feature set using iterative Lucas-Kanade me
 #-----------------------------------------------------------------------------
 
 
-# ------ List of methods not to be called by a user ------
+_cvReleaseKalman = cfunc('cvReleaseKalman', _cvDLL, None,
+    ('kalman', ByRefArg(POINTER(CvKalman)), 1), # CvKalman** kalman 
+)
 
-
-# Allocates Kalman filter structure
 _cvCreateKalman = cfunc('cvCreateKalman', _cvDLL, POINTER(CvKalman),
     ('dynam_params', c_int, 1), # int dynam_params
     ('measure_params', c_int, 1), # int measure_params
     ('control_params', c_int, 1, 0), # int control_params
 )
-
-# Deallocates Kalman filter structure
-_cvReleaseKalman = cfunc('cvReleaseKalman', _cvDLL, None,
-    ('kalman', ByRefArg(POINTER(CvKalman)), 1), # CvKalman** kalman 
-)
-
-# Allocates ConDensation filter structure
-_cvCreateConDensation = cfunc('cvCreateConDensation', _cvDLL, POINTER(CvConDensation),
-    ('dynam_params', c_int, 1), # int dynam_params
-    ('measure_params', c_int, 1), # int measure_params
-    ('sample_count', c_int, 1), # int sample_count 
-)
-
-# Deallocates ConDensation filter structure
-_cvReleaseConDensation = cfunc('cvReleaseConDensation', _cvDLL, None,
-    ('condens', ByRefArg(POINTER(CvConDensation)), 1), # CvConDensation** condens 
-)
-
-
-# ------ List of methods a user should call ------
-
 
 # Allocates Kalman filter structure
 def cvCreateKalman(dynam_params, measure_params, control_params=0):
@@ -7515,6 +7451,16 @@ Adjusts model state
 """
 
 cvKalmanUpdateByMeasurement = cvKalmanCorrect
+
+_cvReleaseConDensation = cfunc('cvReleaseConDensation', _cvDLL, None,
+    ('condens', ByRefArg(POINTER(CvConDensation)), 1), # CvConDensation** condens 
+)
+
+_cvCreateConDensation = cfunc('cvCreateConDensation', _cvDLL, POINTER(CvConDensation),
+    ('dynam_params', c_int, 1), # int dynam_params
+    ('measure_params', c_int, 1), # int measure_params
+    ('sample_count', c_int, 1), # int sample_count 
+)
 
 # Allocates ConDensation filter structure
 def cvCreateConDensation(*args):
@@ -7555,24 +7501,14 @@ Estimates subsequent model state
 #-----------------------------------------------------------------------------
 
 
-# ------ List of methods not to be called by a user ------
-
-
-# Loads a trained cascade classifier from file or the classifier database embedded in OpenCV
-_cvLoadHaarClassifierCascade = cfunc('cvLoadHaarClassifierCascade', _cvDLL, POINTER(CvHaarClassifierCascade),
-    ('directory', c_char_p, 1), # const char* directory
-    ('orig_window_size', CvSize, 1), # CvSize orig_window_size 
-)
-
-# Releases haar classifier cascade
 _cvReleaseHaarClassifierCascade = cfunc('cvReleaseHaarClassifierCascade', _cvDLL, None,
     ('cascade', ByRefArg(POINTER(CvHaarClassifierCascade)), 1), # CvHaarClassifierCascade** cascade 
 )
 
-
-# ------ List of methods a user should call ------
-
-
+_cvLoadHaarClassifierCascade = cfunc('cvLoadHaarClassifierCascade', _cvDLL, POINTER(CvHaarClassifierCascade),
+    ('directory', c_char_p, 1), # const char* directory
+    ('orig_window_size', CvSize, 1), # CvSize orig_window_size 
+)
 
 # Loads a trained cascade classifier from file or the classifier database embedded in OpenCV
 def cvLoadHaarClassifierCascade(directory, orig_window_size):
@@ -7651,6 +7587,8 @@ CV_CALIB_ZERO_TANGENT_DIST = 8
 CV_CALIB_CB_ADAPTIVE_THRESH = 1
 CV_CALIB_CB_NORMALIZE_IMAGE = 2
 CV_CALIB_CB_FILTER_QUADS = 4
+
+
 
 # Projects 3D points to image plane
 cvProjectPoints2 = cfunc('cvProjectPoints2', _cvDLL, None,
@@ -7748,31 +7686,49 @@ cvInitUndistortMap.__doc__ = """void cvInitUndistortMap(const CvMat* intrinsic_m
 Computes undistorion map
 """
 
-# Finds positions of internal corners of the chessboard
-cvFindChessboardCorners = cfunc('cvFindChessboardCorners', _cvDLL, c_int,
+_cvFindChessboardCorners = cfunc('cvFindChessboardCorners', _cvDLL, c_int,
     ('image', c_void_p, 1), # const void* image
     ('pattern_size', CvSize, 1), # CvSize pattern_size
     ('corners', POINTER(CvPoint2D32f), 1), # CvPoint2D32f* corners
     ('corner_count', c_int_p, 1, None), # int* corner_count
-    ('flags', c_int, 1), # int flags
+    ('flags', c_int, 1, CV_CALIB_CB_ADAPTIVE_THRESH), # int flags
 )
-cvFindChessboardCorners.__doc__ = """int cvFindChessboardCorners(const void* image, CvSize pattern_size, CvPoint2D32f* corners, int* corner_count=NULL, int flags=CV_CALIB_CB_ADAPTIVE_THRESH)
 
-Finds positions of internal corners of the chessboard
-"""
+# Finds positions of internal corners of the chessboard
+def cvFindChessboardCorners(image, pattern_size, flags=CV_CALIB_CB_ADAPTIVE_THRESH):
+    """ctypes_array_of_CvPoint2D32f cvFindChessboardCorners(const void* image, CvSize pattern_size, int flags=CV_CALIB_CB_ADAPTIVE_THRESH)
 
-# Renders the detected chessboard corners
-cvDrawChessboardCorners = cfunc('cvDrawChessboardCorners', _cvDLL, None,
+    Finds positions of internal corners of the chessboard
+    """
+    MAX_CORNER_COUNT = 32768
+    corners = (CvPoint2D32f*MAX_CORNER_COUNT)()
+    corner_count = c_int(0)
+    z = _cvFindChessboardCorners(image, pattern_size, corners, pointer(corner_count), flags)
+        
+    if z:
+        n = corner_count.value
+        corners = (CvPoint2D32f*n)(*corners[:n])
+    else:
+        corners = (CvPoint2D32f*0)()
+        
+    corners.pattern_found = z
+    return corners
+    
+_cvDrawChessboardCorners = cfunc('cvDrawChessboardCorners', _cvDLL, None,
     ('image', CvArr_p, 1), # CvArr* image
     ('pattern_size', CvSize, 1), # CvSize pattern_size
     ('corners', POINTER(CvPoint2D32f), 1), # CvPoint2D32f* corners
     ('count', c_int, 1), # int count
     ('pattern_was_found', c_int, 1), # int pattern_was_found 
 )
-cvDrawChessboardCorners.__doc__ = """void cvDrawChessboardCorners(CvArr* image, CvSize pattern_size, CvPoint2D32f* corners, int count, int pattern_was_found)
 
-Renders the detected chessboard corners
-"""
+# Renders the detected chessboard corners
+def cvDrawChessboardCorners(image, pattern_size, corners):
+    """void cvDrawChessboardCorners(CvArr* image, CvSize pattern_size, ctypes_array_of_CvPoint2D32f corners)
+
+    Renders the detected chessboard corners
+    """
+    _cvDrawChessboardCorners(image, pattern_size, corners, len(corners), corners.pattern_found)
 
 
 #-----------------------------------------------------------------------------
@@ -7788,24 +7744,14 @@ class CvPOSITObject(_Structure):
         ('img_vecs', c_float_p), # float* img_vecs
     ]
 
-
-# ------ List of methods not to be called by a user ------
-
-
-# Initializes structure containing object information
-_cvCreatePOSITObject = cfunc('cvCreatePOSITObject', _cvDLL, POINTER(CvPOSITObject),
-    ('points', ListPOINTER(CvPoint3D32f), 1), # CvPoint3D32f* points
-    ('point_count', c_int, 1), # int point_count 
-)
-
-# Deallocates 3D object structure
 _cvReleasePOSITObject = cfunc('cvReleasePOSITObject', _cvDLL, None,
     ('posit_object', ByRefArg(POINTER(CvPOSITObject)), 1), # CvPOSITObject** posit_object 
 )
 
-
-# ------ List of methods a user should call ------
-
+_cvCreatePOSITObject = cfunc('cvCreatePOSITObject', _cvDLL, POINTER(CvPOSITObject),
+    ('points', ListPOINTER(CvPoint3D32f), 1), # CvPoint3D32f* points
+    ('point_count', c_int, 1), # int point_count 
+)
 
 # Initializes structure containing object information
 def cvCreatePOSITObject(points):
@@ -7897,6 +7843,61 @@ Convert points to/from homogeneous coordinates
 """
 
 cvConvertPointsHomogeneous = cvConvertPointsHomogenious
+
+
+# --- 1 Image Processing -----------------------------------------------------
+
+# --- 1.1 Gradients, Edges and Corners ---------------------------------------
+
+# --- 1.2 Sampling, Interpolation and Geometrical Transforms -----------------
+
+# --- 1.3 Morphological Operations -------------------------------------------
+
+# --- 1.4 Filters and Color Conversion ---------------------------------------
+
+# --- 1.5 Pyramids and the Applications --------------------------------------
+
+# --- 1.6 Connected Components -----------------------------------------------
+
+# --- 1.7 Image and Contour moments ------------------------------------------
+
+# --- 1.8 Special Image Transforms -------------------------------------------
+
+# --- 1.9 Histograms ---------------------------------------------------------
+
+# --- 1.10 Matching ----------------------------------------------------------
+
+# --- 2 Structural Analysis --------------------------------------------------
+
+# --- 2.1 Contour Processing Functions ---------------------------------------
+
+# --- 2.2 Computational Geometry ---------------------------------------------
+
+# --- 2.3 Planar Subdivisions ------------------------------------------------
+
+# --- 3 Motion Analysis and Object Tracking ----------------------------------
+
+# --- 3.1 Accumulation of Background Statistics ------------------------------
+
+# --- 3.2 Motion Templates ---------------------------------------------------
+
+# --- 3.3 Object Tracking ----------------------------------------------------
+
+# --- 3.4 Optical Flow -------------------------------------------------------
+
+# --- 3.5 Estimators ---------------------------------------------------------
+
+# --- 4 Pattern Recognition --------------------------------------------------
+
+# --- 4.1 Object Detection ---------------------------------------------------
+
+# --- 5 Camera Calibration and 3D Reconstruction -----------------------------
+
+# --- 5.1 Camera Calibration -------------------------------------------------
+
+# --- 5.2 Pose Estimation ----------------------------------------------------
+
+# --- 5.3 Epipolar Geometry --------------------------------------------------
 
 
 #=============================================================================
@@ -8004,7 +8005,7 @@ CvTrackbarCallback = CFUNCTYPE(None, # void
 cvCreateTrackbar = cfunc('cvCreateTrackbar', _hgDLL, c_int,
     ('trackbar_name', c_char_p, 1), # const char* trackbar_name
     ('window_name', c_char_p, 1), # const char* window_name
-    ('value', c_int_p, 1), # int* value
+    ('value', ByRefArg(c_int), 1), # int* value
     ('count', c_int, 1), # int count
     ('on_change', CallableToFunc(CvTrackbarCallback), 1), # CvTrackbarCallback on_change 
 )
@@ -8177,42 +8178,13 @@ CvCapture._fields_ = [('vtable', POINTER(CvCaptureVTable))]
 class CvVideoWriter(_Structure):
     _fields_ = [] # seriously, no field at all
 
-    
-# ------ List of methods not to be called by a user ------
-
-
-# Initializes capturing video from file
-_cvCreateFileCapture = cfunc('cvCreateFileCapture', _hgDLL, POINTER(CvCapture),
-    ('filename', c_char_p, 1), # const char* filename 
-)
-
-# Initializes capturing video from camera
-_cvCreateCameraCapture = cfunc('cvCreateCameraCapture', _hgDLL, POINTER(CvCapture),
-    ('index', c_int, 1), # int index 
-)
-
-# Releases the CvCapture structure
 _cvReleaseCapture = cfunc('cvReleaseCapture', _hgDLL, None,
     ('capture', ByRefArg(POINTER(CvCapture)), 1), # CvCapture** capture 
 )
 
-# Creates video file writer
-_cvCreateVideoWriter = cfunc('cvCreateVideoWriter', _hgDLL, POINTER(CvVideoWriter),
-    ('filename', c_char_p, 1), # const char* filename
-    ('fourcc', c_int, 1), # int fourcc
-    ('fps', c_double, 1), # double fps
-    ('frame_size', CvSize, 1), # CvSize frame_size
-    ('is_color', c_int, 1, 1), # int is_color
+_cvCreateFileCapture = cfunc('cvCreateFileCapture', _hgDLL, POINTER(CvCapture),
+    ('filename', c_char_p, 1), # const char* filename 
 )
-
-# Releases AVI writer
-_cvReleaseVideoWriter = cfunc('cvReleaseVideoWriter', _hgDLL, None,
-    ('writer', ByRefArg(POINTER(CvVideoWriter)), 1), # CvVideoWriter** writer 
-)
-
-
-# ------ List of methods a user should call ------
-
 
 # Initializes capturing video from file
 def cvCreateFileCapture(filename):
@@ -8226,6 +8198,10 @@ def cvCreateFileCapture(filename):
 
 cvCaptureFromFile = cvCreateFileCapture
 cvCaptureFromAVI = cvCaptureFromFile
+
+_cvCreateCameraCapture = cfunc('cvCreateCameraCapture', _hgDLL, POINTER(CvCapture),
+    ('index', c_int, 1), # int index 
+)
 
 # Initializes capturing video from camera
 def cvCreateCameraCapture(index):
@@ -8315,6 +8291,18 @@ cvSetCaptureProperty.__doc__ = """int cvSetCaptureProperty(CvCapture* capture, i
 Sets video capturing properties
 """
 
+_cvReleaseVideoWriter = cfunc('cvReleaseVideoWriter', _hgDLL, None,
+    ('writer', ByRefArg(POINTER(CvVideoWriter)), 1), # CvVideoWriter** writer 
+)
+
+_cvCreateVideoWriter = cfunc('cvCreateVideoWriter', _hgDLL, POINTER(CvVideoWriter),
+    ('filename', c_char_p, 1), # const char* filename
+    ('fourcc', c_int, 1), # int fourcc
+    ('fps', c_double, 1), # double fps
+    ('frame_size', CvSize, 1), # CvSize frame_size
+    ('is_color', c_int, 1, 1), # int is_color
+)
+
 # Creates video file writer
 def cvCreateVideoWriter(filename, fourcc, fps, frame_size, is_color=1):
     """CvVideoWriter* cvCreateVideoWriter(const char* filename, int fourcc, double fps, CvSize frame_size, int is_color=1)
@@ -8381,9 +8369,13 @@ Starts a new thread for rendering in X Window
 """
 
 
+# --- 1 Simple GUI -----------------------------------------------------------
 
+# --- 2 Loading and Saving Images --------------------------------------------
 
-# here, start from here
+# --- 3 Video I/O functions --------------------------------------------------
+
+# --- 4 Utility and System Functions -----------------------------------------
 
 
 #=============================================================================
@@ -8391,6 +8383,26 @@ Starts a new thread for rendering in X Window
 #=============================================================================
 
     
+#-----------------------------------------------------------------------------
+# A hack on OpenCV's data types
+#-----------------------------------------------------------------------------
+# allows the content's attributes to be directly accessible
+# e.g. img.width <=> img.contents.width
+def _hack_contents_getattr(cls):
+    def _new__getattr__(self, name):
+        return self.contents.__getattribute__(name)
+    cls.__getattr__ = _new__getattr__
+    
+_hack_contents_getattr(POINTER(IplImage))
+_hack_contents_getattr(POINTER(CvMat))
+_hack_contents_getattr(POINTER(CvMatND))
+_hack_contents_getattr(POINTER(CvHistogram))
+_hack_contents_getattr(POINTER(CvSeq))
+_hack_contents_getattr(POINTER(CvSet))
+_hack_contents_getattr(POINTER(CvSubdiv2D))
+_hack_contents_getattr(POINTER(CvSubdiv2DPoint))
+
+
 #-----------------------------------------------------------------------------
 # A hack on OpenCV's data types
 #-----------------------------------------------------------------------------
@@ -8420,72 +8432,6 @@ _hack_del(POINTER(CvPOSITObject))
 _hack_del(POINTER(CvCapture))
 _hack_del(POINTER(CvVideoWriter))
 
-    
-#=============================================================================
-# End of modification + addition by Minh-Tri Pham
-#=============================================================================
-
-# --- 1 Image Processing -----------------------------------------------------
-
-# --- 1.1 Gradients, Edges and Corners ---------------------------------------
-
-# --- 1.2 Sampling, Interpolation and Geometrical Transforms -----------------
-
-# --- 1.3 Morphological Operations -------------------------------------------
-
-# --- 1.4 Filters and Color Conversion ---------------------------------------
-
-# --- 1.5 Pyramids and the Applications --------------------------------------
-
-# --- 1.6 Connected Components -----------------------------------------------
-
-# --- 1.7 Image and Contour moments ------------------------------------------
-
-# --- 1.8 Special Image Transforms -------------------------------------------
-
-# --- 1.9 Histograms ---------------------------------------------------------
-
-# --- 1.10 Matching ----------------------------------------------------------
-
-# --- 2 Structural Analysis --------------------------------------------------
-
-# --- 2.1 Contour Processing Functions ---------------------------------------
-
-# --- 2.2 Computational Geometry ---------------------------------------------
-
-# --- 2.3 Planar Subdivisions ------------------------------------------------
-
-# --- 3 Motion Analysis and Object Tracking ----------------------------------
-
-# --- 3.1 Accumulation of Background Statistics ------------------------------
-
-# --- 3.2 Motion Templates ---------------------------------------------------
-
-# --- 3.3 Object Tracking ----------------------------------------------------
-
-# --- 3.4 Optical Flow -------------------------------------------------------
-
-# --- 3.5 Estimators ---------------------------------------------------------
-
-# --- 4 Pattern Recognition --------------------------------------------------
-
-# --- 4.1 Object Detection ---------------------------------------------------
-
-# --- 5 Camera Calibration and 3D Reconstruction -----------------------------
-
-# --- 5.1 Camera Calibration -------------------------------------------------
-
-# --- 5.2 Pose Estimation ----------------------------------------------------
-
-# --- 5.3 Epipolar Geometry --------------------------------------------------
-
-# --- 1 Simple GUI -----------------------------------------------------------
-
-# --- 2 Loading and Saving Images --------------------------------------------
-
-# --- 3 Video I/O functions --------------------------------------------------
-
-# --- 4 Utility and System Functions -----------------------------------------
 
 #=============================================================================
 # Helpers for access to images for other GUI packages
@@ -8601,8 +8547,36 @@ try:
             return data.reshape(h,ws)[:,:w]
 
     
+    # from numpy.ctypeslib import as_array
+    
+    # James,
+
+    # you can use the function PyBuffer_FromMemory or PyBuffer_FromReadWriteMemory
+    # if you want to have write access to the memory space from python. I
+    # use the following
+    # python function:
+
+    # def array_from_memory(pointer,shape,dtype):
+        # import ctypes as C
+        # import numpy as np
+        # from_memory = C.pythonapi.PyBuffer_FromReadWriteMemory
+        # from_memory.restype = C.py_object
+        # arr = np.empty(shape=shape,dtype=dtype)
+        # arr.data = from_memory(pointer,arr.nbytes)
+        # return arr
+
+    # Kilian
+
+    
 except ImportError:
     pass
+
+
+
+    
+#=============================================================================
+# End of modification + addition by Minh-Tri Pham
+#=============================================================================
 
 # --- Dokumentationsstrings --------------------------------------------------
 
